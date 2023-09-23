@@ -25,8 +25,6 @@ class Server(private val port: Int) {
         val serverSocket = ServerSocket(port)
         val sshHost = "helios.cs.ifmo.ru"
         val sshPort = 2222
-
-        val sshUser = "s354511"
         val dbHost = "localhost"
         val dbPort = 5432
         val dbName = "studs"
