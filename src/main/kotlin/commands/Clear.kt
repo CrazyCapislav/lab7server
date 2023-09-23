@@ -20,9 +20,9 @@ class Clear : Command() {
             val statement = connection.createStatement()
             statement.executeUpdate(sql)
             statement.close()
-            println("Таблица успешно очищена, и счетчик сброшен.")
+//            println("Таблица успешно очищена, и счетчик сброшен.")
         } catch (e: SQLException) {
-            println("Ошибка при выполнении команды очистки таблицы: ${e.message}")
+//            println("Ошибка при выполнении команды очистки таблицы: ${e.message}")
         }
     }
     fun deleteFlatsByUser(connection: Connection, username: String): Boolean {

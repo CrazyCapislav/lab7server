@@ -8,11 +8,17 @@ import java.io.*
 import java.net.ServerSocket
 import java.net.SocketException
 import java.sql.*
+import java.util.concurrent.ExecutorService
+import java.util.concurrent.Executors
+import java.util.concurrent.locks.ReentrantLock
 import java.util.logging.Logger
 
 class Server(private val port: Int) {
     private val logger: Logger = Logger.getLogger(Server::class.java.name)
     private val xmlMapper = XmlMapper()
+
+    private val flatsLock = ReentrantLock()
+    private var flatsSet: HashSet<Flat> = HashSet()
 
     fun start() {
         logger.info("Запуск сервера на порту $port...")
@@ -33,8 +39,7 @@ class Server(private val port: Int) {
         session.connect()
         val assignedPort = session.setPortForwardingL(0, dbHost, dbPort)
         val dbUrl = "jdbc:postgresql://localhost:$assignedPort/$dbName"
-
-        var flatsSet: HashSet<Flat>
+        val threadPool: ExecutorService = Executors.newFixedThreadPool(10)
         try {
             val connection: Connection = DriverManager.getConnection(dbUrl, dbUser, dbPassword)
             logger.info("Успешное подключение к базе данных")
@@ -49,7 +54,7 @@ class Server(private val port: Int) {
             val clientSocket = serverSocket.accept()
             logger.info("Новое подключение: ${clientSocket.inetAddress.hostAddress}")
 
-            Thread {
+            threadPool.execute {
                 val reader = BufferedReader(InputStreamReader(clientSocket.getInputStream()))
                 val writer = PrintWriter(clientSocket.getOutputStream(), true)
 
@@ -64,17 +69,21 @@ class Server(private val port: Int) {
                     when (requestObj){
                         is Auto -> {
                             val requestUser = reader.readLine()
-                            println("1")
+
                             val xmlMapper3 = XmlMapper()
                             val requestUser1 = xmlMapper3.readValue<User>(requestUser)
-                            println("2")
                             val response: String
-                            if (authenticateUser(requestUser1.username, requestUser1.password)){
-                                response = "true"
-                                authenticated = true
+                            flatsLock.lock()
+                            try {
+                                if (authenticateUser(requestUser1.username, requestUser1.password)) {
+                                    response = "true"
+                                    authenticated = true
+                                } else {
+                                    response = "false"
+                                }
                             }
-                            else{
-                                response = "false"
+                            finally {
+                                flatsLock.unlock()
                             }
                             val message = Message(response)
                             val xmlResponse = message.toXml()
@@ -82,18 +91,22 @@ class Server(private val port: Int) {
                             writer.println(xmlResponse)
                         }
                         is Register -> {
-                            println()
                             val requestUser = reader.readLine()
                             val xmlMapper3 = XmlMapper()
                             val requestUser1 = xmlMapper3.readValue<User>(requestUser)
                             registerUser(connection, requestUser1)
                             val response: String
-                            if (authenticateUser(requestUser1.username, requestUser1.password)){
-                                response = "true"
-                                authenticated = true
+                            flatsLock.lock()
+                            try {
+                                if (authenticateUser(requestUser1.username, requestUser1.password)) {
+                                    response = "true"
+                                    authenticated = true
+                                } else {
+                                    response = "false"
+                                }
                             }
-                            else {
-                                response = "false"
+                            finally {
+                                flatsLock.unlock()
                             }
                             val message = Message(response)
                             val xmlResponse = message.toXml()
@@ -132,9 +145,15 @@ class Server(private val port: Int) {
                                 val requestUser = reader.readLine()
                                 val requestUser1 = xmlMapper3.readValue<User>(requestUser)
                                 val add = Add()
-                                add.execute(connection, requestFlat1, requestUser1.username)
-                                flatsSet = show.getHashSet(connection)
-                                response = "Объект добавлен"
+                                flatsLock.lock()
+                                try {
+                                    add.execute(connection, requestFlat1, requestUser1.username)
+                                    flatsSet = show.getHashSet(connection)
+                                    response = "Объект добавлен"
+                                }
+                                finally {
+                                    flatsLock.unlock()
+                                }
 
                             }
                             is RemoveById -> {
@@ -143,22 +162,29 @@ class Server(private val port: Int) {
                                 val id = xmlMapper3.readValue(requestId, String::class.java).toLong()
                                 val requestUser = reader.readLine()
                                 val requestUser1 = xmlMapper3.readValue<User>(requestUser)
-                                if (doesIdExist(connection, id)){
-                                    val rm = RemoveById()
-                                    if (isAdmin(connection,requestUser1.username)){
-                                        rm.removeById(connection,id)
-                                        flatsSet = show.getHashSet(connection)
-                                        response = "Объект удален"
+                                flatsLock.lock()
+                                try{
+                                    if (doesIdExist(connection, id)){
+                                        val rm = RemoveById()
+                                        if (isAdmin(connection,requestUser1.username)){
+                                            rm.removeById(connection,id)
+                                            flatsSet = show.getHashSet(connection)
+                                            response = "Объект удален"
+                                        }
+                                        else {
+                                            rm.removeByIdAndUsername(connection,id, requestUser1.username)
+                                            flatsSet = show.getHashSet(connection)
+                                            response = "Объект удален"
+                                        }
                                     }
                                     else {
-                                        rm.removeByIdAndUsername(connection,id, requestUser1.username)
-                                        flatsSet = show.getHashSet(connection)
-                                        response = "Объект удален"
+                                        response = "Id не существует"
                                     }
                                 }
-                                else {
-                                    response = "Id не существует"
+                                finally {
+                                    flatsLock.unlock()
                                 }
+
                             }
 
                             is Clear -> {
@@ -166,16 +192,23 @@ class Server(private val port: Int) {
                                 val xmlMapper3 = XmlMapper()
                                 val requestUser1 = xmlMapper3.readValue<User>(requestUser)
                                 val clear = Clear()
-                                if (isAdmin(connection,requestUser1.username)){
-                                    clear.execute(connection)
-                                    flatsSet = show.getHashSet(connection)
-                                    response = "Коллекция очищена"
+                                flatsLock.lock()
+                                try {
+                                    if (isAdmin(connection,requestUser1.username)){
+                                        clear.execute(connection)
+                                        flatsSet = show.getHashSet(connection)
+                                        response = "Коллекция очищена"
+                                    }
+                                    else {
+                                        clear.deleteFlatsByUser(connection, requestUser1.username)
+                                        flatsSet = show.getHashSet(connection)
+                                        response = "Коллекция пользователя ${requestUser1.username} очищена"
+                                    }
                                 }
-                                else {
-                                    clear.deleteFlatsByUser(connection, requestUser1.username)
-                                    flatsSet = show.getHashSet(connection)
-                                    response = "Коллекция пользователя ${requestUser1.username} очищена"
+                                finally {
+                                    flatsLock.unlock()
                                 }
+
                             }
                             is RemoveLower -> {
                                 val requestId = reader.readLine()
@@ -184,15 +217,21 @@ class Server(private val port: Int) {
                                 val requestUser = reader.readLine()
                                 val requestUser1 = xmlMapper3.readValue<User>(requestUser)
                                 val removeLower = RemoveLower()
-                                if (isAdmin(connection,requestUser1.username)){
-                                    removeLower.removeLower(connection, id)
-                                    flatsSet = show.getHashSet(connection)
-                                    response = "Элементы с id меньше чем $id удалены"
+                                flatsLock.lock()
+                                try {
+                                    if (isAdmin(connection, requestUser1.username)) {
+                                        removeLower.removeLower(connection, id)
+                                        flatsSet = show.getHashSet(connection)
+                                        response = "Элементы с id меньше чем $id удалены"
+                                    } else {
+                                        removeLower.removeLowerUser(connection, id, requestUser1.username)
+                                        flatsSet = show.getHashSet(connection)
+                                        response =
+                                            "Элементы с id меньше чем $id удалены пользователя ${requestUser1.username}"
+                                    }
                                 }
-                                else {
-                                    removeLower.removeLowerUser(connection, id, requestUser1.username)
-                                    flatsSet = show.getHashSet(connection)
-                                    response = "Элементы с id меньше чем $id удалены пользователя ${requestUser1.username}"
+                                finally {
+                                    flatsLock.unlock()
                                 }
 
                             }
@@ -203,15 +242,21 @@ class Server(private val port: Int) {
                                 val requestUser = reader.readLine()
                                 val requestUser1 = xmlMapper3.readValue<User>(requestUser)
                                 val removeGreater = RemoveGreater()
-                                if (isAdmin(connection,requestUser1.username)){
-                                    removeGreater.removeGreater(connection, id)
-                                    flatsSet = show.getHashSet(connection)
-                                    response = "Элементы с id больше чем $id удалены"
+                                flatsLock.lock()
+                                try{
+                                    if (isAdmin(connection,requestUser1.username)){
+                                        removeGreater.removeGreater(connection, id)
+                                        flatsSet = show.getHashSet(connection)
+                                        response = "Элементы с id больше чем $id удалены"
+                                    }
+                                    else {
+                                        removeGreater.removeGreaterUser(connection, id, requestUser1.username)
+                                        flatsSet = show.getHashSet(connection)
+                                        response = "Элементы с id больше чем $id удалены пользователя ${requestUser1.username}"
+                                    }
                                 }
-                                else {
-                                    removeGreater.removeGreaterUser(connection, id, requestUser1.username)
-                                    flatsSet = show.getHashSet(connection)
-                                    response = "Элементы с id больше чем $id удалены пользователя ${requestUser1.username}"
+                                finally {
+                                    flatsLock.unlock()
                                 }
                             }
                             is UpdateById -> {
@@ -222,22 +267,29 @@ class Server(private val port: Int) {
                                 val requestFlat1 = xmlMapper3.readValue<Flat>(requestFlat)
                                 val requestUser = reader.readLine()
                                 val requestUser1 = xmlMapper3.readValue<User>(requestUser)
-                                if (doesIdExist(connection, id)){
-                                    val up = UpdateById()
-                                    if (isAdmin(connection,requestUser1.username)){
-                                        up.update(connection, requestFlat1, id)
-                                        flatsSet = show.getHashSet(connection)
-                                        response = show.showString(flatsSet)
+                                flatsLock.lock()
+                                try{
+                                    if (doesIdExist(connection, id)){
+                                        val up = UpdateById()
+                                        if (isAdmin(connection,requestUser1.username)){
+                                            up.update(connection, requestFlat1, id)
+                                            flatsSet = show.getHashSet(connection)
+                                            response = show.showString(flatsSet)
+                                        }
+                                        else {
+                                            up.updateUser(connection,requestFlat1, id, requestUser1.username)
+                                            flatsSet = show.getHashSet(connection)
+                                            response = show.showString(flatsSet)
+                                        }
                                     }
                                     else {
-                                        up.updateUser(connection,requestFlat1, id, requestUser1.username)
-                                        flatsSet = show.getHashSet(connection)
-                                        response = show.showString(flatsSet)
+                                        response = "Id не существует"
                                     }
                                 }
-                                else {
-                                    response = "Id не существует"
+                                finally {
+                                    flatsLock.unlock()
                                 }
+
 
 
                             }
@@ -267,16 +319,23 @@ class Server(private val port: Int) {
                                 val removeAllByNumberOfRooms = RemoveAllByNumberOfRooms()
                                 val requestUser = reader.readLine()
                                 val requestUser1 = xmlMapper3.readValue<User>(requestUser)
-                                if (isAdmin(connection,requestUser1.username)){
-                                    removeAllByNumberOfRooms.removeByRooms(connection, NOR)
-                                    response = "Объекты с $NOR комнатами удалены"
-                                    flatsSet = show.getHashSet(connection)
+                                flatsLock.lock()
+                                try{
+                                    if (isAdmin(connection,requestUser1.username)){
+                                        removeAllByNumberOfRooms.removeByRooms(connection, NOR)
+                                        response = "Объекты с $NOR комнатами удалены"
+                                        flatsSet = show.getHashSet(connection)
+                                    }
+                                    else {
+                                        removeAllByNumberOfRooms.removeByRoomsAndUsername(connection, NOR, requestUser1.username)
+                                        response = "Объекты с $NOR комнатами удалены пользователя ${requestUser1.username}"
+                                        flatsSet = show.getHashSet(connection)
+                                    }
                                 }
-                                else {
-                                    removeAllByNumberOfRooms.removeByRoomsAndUsername(connection, NOR, requestUser1.username)
-                                    response = "Объекты с $NOR комнатами удалены пользователя ${requestUser1.username}"
-                                    flatsSet = show.getHashSet(connection)
+                                finally {
+                                    flatsLock.unlock()
                                 }
+
 
                             }
 
@@ -302,7 +361,7 @@ class Server(private val port: Int) {
                     writer.close()
                     clientSocket.close()
                 }
-            }.start()
+            }
         }
     }
     private fun parseMessage(xmlString: String): Message {
