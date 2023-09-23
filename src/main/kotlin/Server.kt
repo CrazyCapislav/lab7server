@@ -25,13 +25,13 @@ class Server(private val port: Int) {
         val serverSocket = ServerSocket(port)
         val sshHost = "helios.cs.ifmo.ru"
         val sshPort = 2222
-        val sshPassword = "KKpk$1840"
+        
         val sshUser = "s354511"
         val dbHost = "localhost"
         val dbPort = 5432
         val dbName = "studs"
         val dbUser = "s354511"
-        val dbPassword = "VxWWFhamaK8hHcft"
+
         val jsch = JSch()
         val session: Session = jsch.getSession(sshUser, sshHost, sshPort)
         session.setPassword(sshPassword)
